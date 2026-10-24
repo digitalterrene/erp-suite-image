@@ -1,0 +1,73 @@
+# Save in your repo as: .github/workflows/build-image.yml
+# Builds a custom Frappe image containing every app listed in apps.json
+# and pushes it to GitHub Container Registry (GHCR).
+#
+# Run it from the repo's Actions tab -> "Build ERP suite image" -> Run workflow.
+# Give every build a NEW tag (for example the date). Never reuse a tag, because
+# the tag is what pins exactly which code you tested.
+
+name: Build ERP suite image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (for example 2026-10-24). Never reuse a tag.'
+        required: true
+      frappe_branch:
+        description: 'Frappe framework tag or branch'
+        required: true
+        default: 'v16.51.1'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout this repo (apps.json)
+        uses: actions/checkout@v4
+
+      - name: Checkout frappe_docker (Containerfile)
+        uses: actions/checkout@v4
+        with:
+          repository: frappe/frappe_docker
+          path: frappe_docker
+
+      - name: Work out image name (GHCR needs lowercase)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/erp-suite" >> "$GITHUB_ENV"
+
+      - name: Encode apps.json
+        id: apps
+        run: echo "b64=$(base64 -w 0 apps.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: frappe_docker
+          file: frappe_docker/images/custom/Containerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ inputs.tag }}
+          build-args: |
+            FRAPPE_PATH=https://github.com/frappe/frappe
+            FRAPPE_BRANCH=${{ inputs.frappe_branch }}
+            PYTHON_VERSION=3.14.0
+            NODE_VERSION=24.13.0
+            APPS_JSON_BASE64=${{ steps.apps.outputs.b64 }}
+
+      - name: Show which apps ended up in the image
+        run: |
+          echo "Image: ${IMAGE}:${{ inputs.tag }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          docker run --rm --entrypoint ls "${IMAGE}:${{ inputs.tag }}" -1 /home/frappe/frappe-bench/apps | tee -a "$GITHUB_STEP_SUMMARY"
